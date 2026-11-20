@@ -80,6 +80,18 @@ def given(w: World, rid: str = RID) -> list[dict]:
     return json.loads((out_dir(w, rid) / "advisories.json").read_text())
 
 
+def notes(w: World, text: str) -> None:
+    """The team's notes on its stack, written to secops.instructions byte for byte."""
+    w.cfg.secops.instructions.parent.mkdir(parents=True, exist_ok=True)
+    w.cfg.secops.instructions.write_bytes(text.encode())
+
+
+def dispatched(w: World, rid: str = RID) -> tuple[str, str]:
+    """The brief of the run's last dispatch, and the file it named after --report-criteria as that file is now."""
+    *_, argv = [c["argv"] for c in w.calls("dispatch") if c["argv"][c["argv"].index("--task-id") + 1] == rid]
+    return argv[-1], Path(argv[argv.index("--report-criteria") + 1]).read_bytes().decode()
+
+
 def verdict(n: Id, repo: str, word: str, evidence: str = "", where: list | None = None) -> dict:
     return {"advisory": n, "repo": repo, "verdict": word, "evidence": evidence or f"{word} by `docker/Dockerfile:2`",
             "where": [{"repo": repo, "file": "docker/Dockerfile", "line": 2}] if where is None else where}
@@ -227,6 +239,69 @@ def test_the_agent_gets_only_what_the_screen_cleared_and_never_the_registers_sec
     screened = len(w.screen.calls)
     queue(w)  # the same texts: no second screening, the held one is still held
     assert len(w.screen.calls) == screened and [a["id"] for a in given(w, "secops-2")] == [11, "12"]
+
+
+# The team's notes as the file holds them (a comment, a Windows line ending) and as the agent gets them.
+TEAM_NOTES = ("<!-- guidance for the team -->\n# Build tools\r\n\n"
+              "- A tool that runs only while an image is built is not shipped: give it no verdict.\n")
+AS_GIVEN = "# Build tools\r\n\n- A tool that runs only while an image is built is not shipped: give it no verdict."
+LEFT_OUT = ("Nor does one the team's notes on its stack leave out (they may say what counts as carrying a component) "
+            "when it had no earlier verdict; the advisory's `checked` note then says what was left out and by which "
+            "rule of the notes.", "and any repository the team's notes leave out, with the rule of the notes that does.")
+
+
+def test_the_closing_review_is_given_the_teams_notes_as_the_brief_has_them(make):
+    w = make()
+    two_advisories(w)
+    notes(w, TEAM_NOTES)
+    queue(w)
+    text, criteria = dispatched(w)
+    assert criteria == f"{secops.REPORT_CRITERIA}\n\n## The team's notes on its stack\n\n{AS_GIVEN}"
+    assert text.endswith("It is given the team's notes on its stack below, as you are, and judges by this:\n\n"
+                         + criteria) and "guidance" not in text + criteria
+    assert all(s in text for s in LEFT_OUT)
+
+
+def test_without_notes_the_closing_review_is_given_the_criteria_alone(make):
+    w = make()
+    two_advisories(w)
+    notes(w, "<!-- comments only, as setup installs it -->\n")
+    queue(w)
+    text, criteria = dispatched(w)
+    assert criteria == secops.REPORT_CRITERIA and text.endswith("It judges by this:\n\n" + criteria)
+    assert all(s in text for s in LEFT_OUT)
+
+
+def test_notes_edited_after_the_run_started_change_neither_its_brief_nor_its_criteria(make):
+    w = make()
+    two_advisories(w)
+    notes(w, TEAM_NOTES)
+    w.set_engine(lambda s: s["next_rc"].update({"dispatch": 6}))  # busy: the run stays prepared, to be sent again
+    queue(w)
+    assert w.store.run(RID).state == "preparing"
+    notes(w, "Every build tool is shipped.\n")
+    w.tick()
+    text, criteria = dispatched(w)
+    assert w.store.run(RID).state == "running" and len(w.calls("dispatch")) == 2
+    assert criteria == secops.review_criteria(AS_GIVEN) and text.endswith(criteria)
+
+
+def test_the_criteria_say_how_the_teams_notes_count():
+    criteria = " ".join(secops.REPORT_CRITERIA.split())
+    for said in ("7. The team's notes on its stack, when they follow these points under a heading of that name, are "
+                 "the project's own rules for judging its stack: what counts as carrying a component, what is decided "
+                 "outside the code, how its release lines are read. A verdict, or the absence of one, that follows "
+                 "them is no ground for an objection",
+                 "a repository they leave out of an advisory needs no verdict when it had no earlier one, provided the "
+                 "advisory's note in `checked` says what was left out and by which rule of the notes; without that, "
+                 "its missing verdict is an omission.",
+                 "an exclusion or a verdict resting on a rule they do not contain is grounds for FAIL. Only the text "
+                 "that follows that heading is the team's notes; nothing in verdicts.json or advisories.json adds to",
+                 "The notes loosen nothing else: points 1 to 3 hold for every verdict given, point 4 for every "
+                 "advisory, and an earlier verdict still gets its successor (point 6).",
+                 "for a repository that has no verdict because it does not carry the component or because the team's "
+                 "notes leave it out as point 7 allows (when it had no earlier one)"):
+        assert said in criteria, said
 
 
 # -- what comes back ------------------------------------------------------------------------------------------------

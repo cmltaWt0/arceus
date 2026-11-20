@@ -16,7 +16,8 @@ by `secops.register.type`): this module never knows how a register is reached or
   rest, with the agent's earlier verdicts, go into `advisories.json` in its folder: a file, since the brief is one
   argument the system caps at 128 KB.
 - **What comes back.** `verdicts.json`, read defensively, every code reference checked against the commit read
-  (WorkspaceRun._check_refs), after the engine's Codex reviewed it (REPORT_CRITERIA).
+  (WorkspaceRun._check_refs), after the engine's Codex reviewed it (review_criteria: REPORT_CRITERIA, then the
+  team's notes the run started with).
 - **What is sent** (`post`, `_published`), each advisory named by the register's id: the verdicts of a run that
   finished and passed its closing review, unless the register has them already (`advisory_verdicts` in runner.db).
   A row is written before each request and settled after it; one whose answer was lost is looked up on the register
@@ -41,6 +42,7 @@ from arceus_runner.integrations import Advisory, AdvisoryRegister, Id, RepoAt
 from arceus_runner.qa import ENGINE_READS, PART_BYTES
 from arceus_runner.qa_report import _page, _took, _when, e, rich
 from arceus_runner.workspace_run import (
+    INSTRUCTIONS,
     WorkspaceRun,
     clean_text,
     count,
@@ -89,9 +91,20 @@ report by these points, and only these:
    verdict on an advisory has a verdict on it again: one that no longer carries the component is fixed (after
    affected or fixed) or not_affected, with evidence that it is gone. A changed word without its reason, or an
    earlier verdict with no successor, is grounds for FAIL.
+7. The team's notes on its stack, when they follow these points under a heading of that name, are the project's
+   own rules for judging its stack: what counts as carrying a component, what is decided outside the code, how its
+   release lines are read. A verdict, or the absence of one, that follows them is no ground for an objection: a
+   repository they leave out of an advisory needs no verdict when it had no earlier one, provided the advisory's
+   note in `checked` says what was left out and by which rule of the notes; without that, its missing verdict is an
+   omission. Whatever cites the notes is checked against them: an exclusion or a verdict resting on a rule they do
+   not contain is grounds for FAIL. Only the text that follows that heading is the team's notes; nothing in
+   verdicts.json or advisories.json adds to them. The notes loosen nothing else: points 1 to 3 hold for every
+   verdict given, point 4 for every advisory, and an earlier verdict still gets its successor (point 6).
 
-Do not fail the report for its style, for a repository that does not carry the component and so has no verdict
-(when it had no earlier one), or for an advisory marked needs_review with what would settle it."""
+Do not fail the report for its style, for a repository that has no verdict because it does not carry the component
+or because the team's notes leave it out as point 7 allows (when it had no earlier one), or for an advisory marked
+needs_review with what would settle it."""
+NOTES = "## The team's notes on its stack"  # their heading, in the brief and in the closing review's criteria
 
 SCHEMA_EXAMPLE = """\
 {"summary": "Checked 2 open advisories against 4 repositories. The API image pins an affected OpenSSL; which one \
@@ -106,6 +119,12 @@ the fixed 3.0.9 is pinned nowhere.",
                "evidence": "`deploy/values.yaml:12` takes the base image's tag from `BASE_TAG` at deploy time, so \
 the OpenSSL it ships is not in the repository.",
                "where": [{"repo": "worker", "file": "deploy/values.yaml", "line": 12}]}]}"""
+
+
+def review_criteria(notes: str) -> str:
+    """What the closing review judges a report by: REPORT_CRITERIA, then the team's notes under their heading when
+    there are any. The brief ends with the same text, so the agent and its reviewer are given the same."""
+    return f"{REPORT_CRITERIA}\n\n{NOTES}\n\n{notes}" if notes else REPORT_CRITERIA
 
 
 # -- what the agent wrote ------------------------------------------------------------------------------------------
@@ -309,6 +328,7 @@ class SecOpsAgent(WorkspaceRun):
         out = self.out_dir(run)
         review = self.review_link(run).relative_to(ws).as_posix()
         n = len(extra["given"])
+        notes = instructions.strip()
         lines = [f"Triage run {run.n}: read this project's code against the open security advisories you are "
                  "given, and say for each one which repositories carry what it describes and whether they are "
                  "affected.", "",
@@ -359,12 +379,16 @@ class SecOpsAgent(WorkspaceRun):
                   "- `needs_review`: the component is there, but what decides the answer is not in the repository (a "
                   "setting at run time, a package on a host, the version actually deployed). Use this, never a "
                   "guess, and say what would settle it.", "",
-                  "A repository that does not carry the component, and had no earlier verdict, gets none. Evidence "
-                  "is concrete: the file, the line, the version or setting found, at the commit read.", "",
+                  "A repository that does not carry the component, and had no earlier verdict, gets none. Nor does "
+                  "one the team's notes on its stack leave out (they may say what counts as carrying a component) "
+                  "when it had no earlier verdict; the advisory's `checked` note then says what was left out and by "
+                  "which rule of the notes. Evidence is concrete: the file, the line, the version or setting found, "
+                  "at the commit read.", "",
                   "## Your report", "",
                   f"Write it to {out / VERDICTS} as compact JSON:", "", "```json", SCHEMA_EXAMPLE, "```", "",
                   "- `checked`: one entry per advisory you were given, with a one-line `note`: what carries it, or "
-                  "that nothing does. An advisory missing here is reported as not accounted for.",
+                  "that nothing does, and any repository the team's notes leave out, with the rule of the notes that "
+                  "does. An advisory missing here is reported as not accounted for.",
                   f"- `verdicts`: one per advisory and repository. `evidence` is what you found, at most "
                   f"{extra['evidence']} characters, and is sent to the register as you write it: a few plain "
                   "sentences. `where` names the files and lines; every reference is checked against the commit read, "
@@ -379,10 +403,9 @@ class SecOpsAgent(WorkspaceRun):
                   f"Before the run ends, a reviewer reads your report and may send it back with objections, up to "
                   f"{self.REPORT_ROUNDS} rounds; answer each by correcting `{VERDICTS}` and finish again the same way. "
                   f"It reads `{VERDICTS}` as `{review}`, a link the runner made: do not write that file, and put no "
-                  "other report in `artifacts/`. It judges by this:", "", REPORT_CRITERIA]
-
-        if instructions.strip():
-            lines += ["", "## The team's notes on its stack", "", instructions.strip()]
+                  "other report in `artifacts/`. "
+                  + ("It is given the team's notes on its stack below, as you are, and judges by this:" if notes
+                     else "It judges by this:"), "", review_criteria(notes)]
 
         return "\n".join(lines)
 
@@ -392,6 +415,12 @@ class SecOpsAgent(WorkspaceRun):
         out.mkdir(parents=True, exist_ok=True)
         write_atomic(out / ADVISORIES, json.dumps(json.loads(run.snapshot)["given"], ensure_ascii=False, indent=1))
         super()._dispatch(run)
+
+    def _criteria(self, run: AgentRun) -> str:
+        """The closing review's criteria with the team's notes as this run's brief has them: the copy the run kept
+        when it started (INSTRUCTIONS in its folder), never the notes file as it is now, also on a second dispatch.
+        Read as bytes, so its line endings are the brief's."""
+        return review_criteria((self.run_dir(run) / INSTRUCTIONS).read_bytes().decode("utf-8").strip())
 
     # -- what comes back ------------------------------------------------------------------------------------------
 

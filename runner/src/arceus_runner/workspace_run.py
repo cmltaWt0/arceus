@@ -61,6 +61,7 @@ SLOT_GRACE = timedelta(hours=1)   # a scheduled time is queued within this long 
 # the root.
 CONSOLE_PATHS = {"qa": "/qa/", "arch": "/architecture/", "secops": "/secops/"}
 MAX_INSTRUCTIONS = 64 * 1024  # without comments; the brief is one argv string, and Linux caps one at 128 KB
+INSTRUCTIONS = "instructions.md"  # in a run's folder under the kind's reports: the instructions it started with
 
 
 def encodable(value):
@@ -527,7 +528,7 @@ class WorkspaceRun:
             return
         folder = self.run_dir(run)
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "instructions.md").write_text(text, encoding="utf-8")
+        (folder / INSTRUCTIONS).write_text(text, encoding="utf-8")
         # The run's clock starts here and its times are fixed now: the brief names them, the runner stops the run by
         # them and the console shows them, whatever config.yaml says later.
         now = self.d.now().astimezone(timezone.utc)
@@ -716,7 +717,7 @@ class WorkspaceRun:
         if not self.REPORT_CRITERIA:
             return None
         path = self._extra_dirs(run).parent / "report-criteria.md"
-        write_atomic(path, self.REPORT_CRITERIA)
+        write_atomic(path, self._criteria(run))
         self._link_report(run)
         return ReportReview(rounds=self.REPORT_ROUNDS, criteria=path)
 
@@ -1285,6 +1286,11 @@ class WorkspaceRun:
 
     def _instructions(self) -> tuple[str | None, str]:
         return read_instructions(self.c.instructions)
+
+    def _criteria(self, run: AgentRun) -> str:
+        """What the closing review of this run judges its report by (`_report_review`): REPORT_CRITERIA, unless the
+        kind adds to it."""
+        return self.REPORT_CRITERIA
 
     def _brief_source(self, run: AgentRun) -> tuple[str | None, str, Path]:
         """The instructions this run is given, or None and why it cannot start, and the file they come from."""
