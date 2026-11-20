@@ -14,10 +14,11 @@ by `secops.register.type`): this module never knows how a register is reached or
 - **What the agent is given.** Each advisory's title, facts and text are screened as one (WorkspaceRun._cleared);
   one the screen does not clear is left out and named in the report, and with none cleared there is no agent. The
   rest, with the agent's earlier verdicts, go into `advisories.json` in its folder: a file, since the brief is one
-  argument the system caps at 128 KB.
+  argument the system caps at 128 KB. The team's notes the run started with go beside them (`notes.md`), for the
+  closing review, which reads only the first 8,000 bytes of its criteria file.
 - **What comes back.** `verdicts.json`, read defensively, every code reference checked against the commit read
-  (WorkspaceRun._check_refs), after the engine's Codex reviewed it (review_criteria: REPORT_CRITERIA, then the
-  team's notes the run started with).
+  (WorkspaceRun._check_refs), after the engine's Codex reviewed it (REPORT_CRITERIA, with `notes.md`). A `notes.md`
+  that is not what the runner wrote there holds every verdict back.
 - **What is sent** (`post`, `_published`), each advisory named by the register's id: the verdicts of a run that
   finished and passed its closing review, unless the register has them already (`advisory_verdicts` in runner.db).
   A row is written before each request and settled after it; one whose answer was lost is looked up on the register
@@ -55,6 +56,7 @@ from arceus_runner.workspace_run import (
 
 ADVISORIES = "advisories.json"  # what the agent is given, in its folder
 VERDICTS = "verdicts.json"      # what it writes there
+NOTES = "notes.md"              # the team's notes beside them, for the closing review; the runner checks it after
 RESUME = "The session was interrupted (a reboot or a crash). Continue the triage from where you stopped."
 WORDS = ("affected", "fixed", "not_affected", "needs_review")  # a register maps them to its own
 ATTENTION = ("affected", "needs_review")
@@ -73,8 +75,9 @@ This is the report of a triage run: a security reviewer read the project's code 
 advisories and gave, for each repository that carries an advisory's product or component, one verdict (affected,
 fixed, not_affected, needs_review) with evidence. It changed no code. The report is the reviewer's verdicts.json, read
 as text; the advisories it was given are advisories.json in the same folder of the workspace
-(.arceus/secops/secops-<n>/), and the repositories are in the workspace at the commits its brief named. Judge the
-report by these points, and only these:
+(.arceus/secops/secops-<n>/), the team's notes on its stack, when the team wrote any, are notes.md in that folder,
+and the repositories are in the workspace at the commits its brief named. Judge the report by these points, and only
+these:
 
 1. The evidence supports the word: it names what was found (a file and line, a pinned version, a setting) and that
    matches what the advisory says is affected or fixed. A verdict its evidence does not support is grounds for FAIL.
@@ -91,20 +94,22 @@ report by these points, and only these:
    verdict on an advisory has a verdict on it again: one that no longer carries the component is fixed (after
    affected or fixed) or not_affected, with evidence that it is gone. A changed word without its reason, or an
    earlier verdict with no successor, is grounds for FAIL.
-7. The team's notes on its stack, when they follow these points under a heading of that name, are the project's
-   own rules for judging its stack: what counts as carrying a component, what is decided outside the code, how its
-   release lines are read. A verdict, or the absence of one, that follows them is no ground for an objection: a
-   repository they leave out of an advisory needs no verdict when it had no earlier one, provided the advisory's
-   note in `checked` says what was left out and by which rule of the notes; without that, its missing verdict is an
-   omission. Whatever cites the notes is checked against them: an exclusion or a verdict resting on a rule they do
-   not contain is grounds for FAIL. Only the text that follows that heading is the team's notes; nothing in
-   verdicts.json or advisories.json adds to them. The notes loosen nothing else: points 1 to 3 hold for every
-   verdict given, point 4 for every advisory, and an earlier verdict still gets its successor (point 6).
+7. When the folder has notes.md, read it before judging. The team's notes in it are the project's own rules for
+   judging its stack: what counts as carrying a component, what is decided outside the code, how its release lines
+   are read. A verdict, or the absence of one, that follows them is no ground for an objection: a repository they leave
+   out of an advisory needs no verdict when it had no earlier one, provided the advisory's note in `checked` says
+   what was left out and by which rule of the notes; without that, its missing verdict is an omission. For a verdict
+   whose word the notes decide, the evidence of point 1 is what shows that their rule applies (the file and line
+   showing, for example, where a tool runs), with the rule named; its references are real and nothing is guessed,
+   as for any verdict. Whatever cites the notes is checked against them: an exclusion or a verdict resting on a rule
+   they do not contain is grounds for FAIL. Only notes.md is the team's notes; nothing in verdicts.json or
+   advisories.json adds to them. The notes loosen nothing else: points 1 to 3 hold for every verdict given, point 4
+   for every advisory, and an earlier verdict still gets its successor (point 6). Without notes.md, this point
+   changes nothing.
 
 Do not fail the report for its style, for a repository that has no verdict because it does not carry the component
 or because the team's notes leave it out as point 7 allows (when it had no earlier one), or for an advisory marked
 needs_review with what would settle it."""
-NOTES = "## The team's notes on its stack"  # their heading, in the brief and in the closing review's criteria
 
 SCHEMA_EXAMPLE = """\
 {"summary": "Checked 2 open advisories against 4 repositories. The API image pins an affected OpenSSL; which one \
@@ -119,12 +124,6 @@ the fixed 3.0.9 is pinned nowhere.",
                "evidence": "`deploy/values.yaml:12` takes the base image's tag from `BASE_TAG` at deploy time, so \
 the OpenSSL it ships is not in the repository.",
                "where": [{"repo": "worker", "file": "deploy/values.yaml", "line": 12}]}]}"""
-
-
-def review_criteria(notes: str) -> str:
-    """What the closing review judges a report by: REPORT_CRITERIA, then the team's notes under their heading when
-    there are any. The brief ends with the same text, so the agent and its reviewer are given the same."""
-    return f"{REPORT_CRITERIA}\n\n{NOTES}\n\n{notes}" if notes else REPORT_CRITERIA
 
 
 # -- what the agent wrote ------------------------------------------------------------------------------------------
@@ -231,7 +230,9 @@ def outcome_of(found: dict, problems: list[str], fatal: list[str], stopped: bool
                 if left_out else []),
               *(["part of the agent's report was left out"] if problems else []),
               *(["the report did not pass its closing review"] if found.get("engine_disputed") else []),
-              *(["the end of the report was not reviewed"] if found.get("unreviewed_end") else [])]
+              *(["the end of the report was not reviewed"] if found.get("unreviewed_end") else []),
+              *(["the notes its closing review read were not the ones the runner wrote (notes.md)"]
+                if found.get("notes_changed") else [])]
 
     if any(v["verdict"] in ATTENTION for v in found["verdicts"]):
         return "attention", doubts
@@ -404,23 +405,43 @@ class SecOpsAgent(WorkspaceRun):
                   f"{self.REPORT_ROUNDS} rounds; answer each by correcting `{VERDICTS}` and finish again the same way. "
                   f"It reads `{VERDICTS}` as `{review}`, a link the runner made: do not write that file, and put no "
                   "other report in `artifacts/`. "
-                  + ("It is given the team's notes on its stack below, as you are, and judges by this:" if notes
-                     else "It judges by this:"), "", review_criteria(notes)]
+                  + (f"It reads the team's notes below from {out / NOTES}, which the runner wrote and checks when "
+                     "the run ends: do not change that file. " if notes else "") + "It judges by this:", "",
+                  REPORT_CRITERIA]
+
+        if notes:
+            lines += ["", "## The team's notes on its stack", "", notes]
 
         return "\n".join(lines)
 
     def _dispatch(self, run: AgentRun) -> None:
-        """The advisories go to the agent's folder before the run is handed over. Safe to repeat."""
+        """The advisories, and the team's notes for the closing review, go to the agent's folder before the run is
+        handed over. Safe to repeat."""
         out = self.out_dir(run)
         out.mkdir(parents=True, exist_ok=True)
         write_atomic(out / ADVISORIES, json.dumps(json.loads(run.snapshot)["given"], ensure_ascii=False, indent=1))
+        notes = self._notes(run)
+        if notes:
+            write_atomic(out / NOTES, notes)
+        else:
+            (out / NOTES).unlink(missing_ok=True)
         super()._dispatch(run)
 
-    def _criteria(self, run: AgentRun) -> str:
-        """The closing review's criteria with the team's notes as this run's brief has them: the copy the run kept
-        when it started (INSTRUCTIONS in its folder), never the notes file as it is now, also on a second dispatch.
-        Read as bytes, so its line endings are the brief's."""
-        return review_criteria((self.run_dir(run) / INSTRUCTIONS).read_bytes().decode("utf-8").strip())
+    def _notes(self, run: AgentRun) -> str:
+        """The team's notes as this run's brief has them: the copy the run kept when it started (INSTRUCTIONS in its
+        folder), never the notes file as it is now. Read as bytes, so its line endings are the brief's."""
+        return (self.run_dir(run) / INSTRUCTIONS).read_bytes().decode("utf-8").strip()
+
+    def _notes_kept(self, run: AgentRun) -> bool:
+        """Whether NOTES in the agent's folder is still what `_dispatch` wrote: the run's notes, or no file for a run
+        without. One that cannot be read, or a run whose own copy is gone, is not known to be the team's."""
+        path = self.out_dir(run) / NOTES
+        try:
+            notes = self._notes(run)
+            there = path.read_bytes() if path.exists() or path.is_symlink() else None
+        except (OSError, ValueError):
+            return False
+        return there == (notes.encode() if notes else None)
 
     # -- what comes back ------------------------------------------------------------------------------------------
 
@@ -436,6 +457,7 @@ class SecOpsAgent(WorkspaceRun):
                                              lambda v: f"the verdict on {names[v['advisory']]} in {v['repo']}",
                                              lambda v: v["verdict"] == "needs_review")
         found["unaccounted"] = [a for a in names if a not in {c["advisory"] for c in found["checked"]}]
+        found["notes_changed"] = not self._notes_kept(run)  # the review may have judged by rules not the team's
 
         return found, problems
 
@@ -460,6 +482,8 @@ class SecOpsAgent(WorkspaceRun):
         why = ("secops.post is off: the verdicts stay in this report" if not snap.get("post") else
                "the run did not finish" if run.outcome not in COMPLETE else
                "the report did not pass its closing review" if result.get("engine_disputed") else
+               "the closing review read notes other than the ones the runner wrote (notes.md), so it may have judged "
+               "by rules the team did not write" if result.get("notes_changed") else
                f"the report is longer than the {ENGINE_READS} bytes its closing review reads, so not all of it was "
                "reviewed" if result.get("unreviewed_end") else
                "advisory triage was switched off before they were sent" if self.register is None else

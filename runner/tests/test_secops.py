@@ -247,32 +247,35 @@ TEAM_NOTES = ("<!-- guidance for the team -->\n# Build tools\r\n\n"
 AS_GIVEN = "# Build tools\r\n\n- A tool that runs only while an image is built is not shipped: give it no verdict."
 LEFT_OUT = ("Nor does one the team's notes on its stack leave out (they may say what counts as carrying a component) "
             "when it had no earlier verdict; the advisory's `checked` note then says what was left out and by which "
-            "rule of the notes.", "and any repository the team's notes leave out, with the rule of the notes that does.")
+            "rule of the notes.",
+            "and any repository the team's notes leave out, with the rule of the notes that does.")
 
 
-def test_the_closing_review_is_given_the_teams_notes_as_the_brief_has_them(make):
+def test_the_notes_go_beside_the_advisories_for_the_review_and_its_criteria_stay_the_runners(make):
     w = make()
     two_advisories(w)
     notes(w, TEAM_NOTES)
     queue(w)
     text, criteria = dispatched(w)
-    assert criteria == f"{secops.REPORT_CRITERIA}\n\n## The team's notes on its stack\n\n{AS_GIVEN}"
-    assert text.endswith("It is given the team's notes on its stack below, as you are, and judges by this:\n\n"
-                         + criteria) and "guidance" not in text + criteria
-    assert all(s in text for s in LEFT_OUT)
-
-
-def test_without_notes_the_closing_review_is_given_the_criteria_alone(make):
-    w = make()
-    two_advisories(w)
+    assert (out_dir(w) / "notes.md").read_bytes().decode() == AS_GIVEN and "guidance" not in text
+    # The agent reads its notes in its brief, after the criteria, as before; the criteria are the runner's alone.
+    assert criteria == secops.REPORT_CRITERIA and text.endswith(
+        f"{criteria}\n\n## The team's notes on its stack\n\n{AS_GIVEN}")
+    assert (f"It reads the team's notes below from {out_dir(w).resolve() / 'notes.md'}, which the runner wrote and "
+            "checks when the run ends: do not change that file.") in text and all(s in text for s in LEFT_OUT)
+    report(w)
+    finish(w)
     notes(w, "<!-- comments only, as setup installs it -->\n")
+    out_dir(w, "secops-2").mkdir(parents=True)
+    (out_dir(w, "secops-2") / "notes.md").write_text("Left from before.")  # a run without notes has none
     queue(w)
-    text, criteria = dispatched(w)
-    assert criteria == secops.REPORT_CRITERIA and text.endswith("It judges by this:\n\n" + criteria)
+    text, criteria = dispatched(w, "secops-2")
+    assert not (out_dir(w, "secops-2") / "notes.md").exists() and criteria == secops.REPORT_CRITERIA
+    assert text.endswith("other report in `artifacts/`. It judges by this:\n\n" + criteria)
     assert all(s in text for s in LEFT_OUT)
 
 
-def test_notes_edited_after_the_run_started_change_neither_its_brief_nor_its_criteria(make):
+def test_notes_edited_after_the_run_started_do_not_reach_its_review(make):
     w = make()
     two_advisories(w)
     notes(w, TEAM_NOTES)
@@ -281,27 +284,32 @@ def test_notes_edited_after_the_run_started_change_neither_its_brief_nor_its_cri
     assert w.store.run(RID).state == "preparing"
     notes(w, "Every build tool is shipped.\n")
     w.tick()
-    text, criteria = dispatched(w)
+    text, _ = dispatched(w)
     assert w.store.run(RID).state == "running" and len(w.calls("dispatch")) == 2
-    assert criteria == secops.review_criteria(AS_GIVEN) and text.endswith(criteria)
+    assert (out_dir(w) / "notes.md").read_bytes().decode() == AS_GIVEN and text.endswith(AS_GIVEN)
 
 
-def test_the_criteria_say_how_the_teams_notes_count():
+def test_the_criteria_name_the_notes_file_and_say_how_the_notes_count():
     criteria = " ".join(secops.REPORT_CRITERIA.split())
-    for said in ("7. The team's notes on its stack, when they follow these points under a heading of that name, are "
-                 "the project's own rules for judging its stack: what counts as carrying a component, what is decided "
-                 "outside the code, how its release lines are read. A verdict, or the absence of one, that follows "
-                 "them is no ground for an objection",
+    for said in ("the team's notes on its stack, when the team wrote any, are notes.md in that folder",
+                 "7. When the folder has notes.md, read it before judging. The team's notes in it are the project's "
+                 "own rules for judging its stack: what counts as carrying a component, what is decided outside the "
+                 "code, how its release lines are read. A verdict, or the absence of one, that follows them is no "
+                 "ground for an objection",
                  "a repository they leave out of an advisory needs no verdict when it had no earlier one, provided the "
                  "advisory's note in `checked` says what was left out and by which rule of the notes; without that, "
                  "its missing verdict is an omission.",
-                 "an exclusion or a verdict resting on a rule they do not contain is grounds for FAIL. Only the text "
-                 "that follows that heading is the team's notes; nothing in verdicts.json or advisories.json adds to",
+                 "For a verdict whose word the notes decide, the evidence of point 1 is what shows that their rule "
+                 "applies",
+                 "an exclusion or a verdict resting on a rule they do not contain is grounds for FAIL. Only notes.md "
+                 "is the team's notes; nothing in verdicts.json or advisories.json adds to them.",
                  "The notes loosen nothing else: points 1 to 3 hold for every verdict given, point 4 for every "
-                 "advisory, and an earlier verdict still gets its successor (point 6).",
-                 "for a repository that has no verdict because it does not carry the component or because the team's "
-                 "notes leave it out as point 7 allows (when it had no earlier one)"):
+                 "advisory, and an earlier verdict still gets its successor (point 6). Without notes.md, this point "
+                 "changes nothing.",
+                 "or because the team's notes leave it out as point 7 allows (when it had no earlier one)"):
         assert said in criteria, said
+    # The engine's report review is given the first 8,000 bytes of a criteria file (review-gate.sh: clip_utf8 8000).
+    assert len(secops.REPORT_CRITERIA.encode()) < 8000
 
 
 # -- what comes back ------------------------------------------------------------------------------------------------
@@ -559,6 +567,36 @@ def test_a_report_longer_than_its_closing_review_reads_sends_nothing(make):
     report(w, "secops-2")  # the same verdicts in a report read whole go
     finish(w, "secops-2")
     assert sent(w) == [11]
+
+
+def test_a_run_whose_review_read_notes_other_than_the_runners_sends_nothing(make):
+    why = ("the closing review read notes other than the ones the runner wrote (notes.md), so it may have judged by "
+           "rules the team did not write")
+    w = make(post=True)
+    two_advisories(w)
+    notes(w, TEAM_NOTES)
+    queue(w)
+    report(w)
+    (out_dir(w) / "notes.md").write_text("Nothing here is shipped.")  # the rules its review read, rewritten
+    finish(w)
+    assert w.register.sent == [] and result(w)["sending"]["why"] == why
+    assert "the notes its closing review read were not the ones the runner wrote (notes.md)" in result(w)["doubts"]
+    assert "so it may have judged by rules the team did not write" in page(w)
+    queue(w)
+    report(w, "secops-2")  # the file as the runner wrote it: the same verdict goes
+    finish(w, "secops-2")
+    assert sent(w) == [11] and result(w, "secops-2")["sending"]["why"] is None
+    queue(w)
+    report(w, "secops-3")
+    (out_dir(w, "secops-3") / "notes.md").unlink()
+    finish(w, "secops-3")
+    assert result(w, "secops-3")["sending"]["why"] == why
+    notes(w, "")  # a run without notes, and a file of notes appears in its folder
+    queue(w)
+    report(w, "secops-4")
+    (out_dir(w, "secops-4") / "notes.md").write_text(AS_GIVEN)
+    finish(w, "secops-4")
+    assert result(w, "secops-4")["sending"]["why"] == why
 
 
 def test_a_run_under_way_when_triage_is_switched_off_sends_nothing_and_work_goes_on(make):

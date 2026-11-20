@@ -1,7 +1,8 @@
 <!--
 The team's notes on its stack for advisory triage (secops: in config.yaml). Everything outside these comments
 goes, as it is, to the agent at the end of every triage run, after the runner's own rules for the verdicts, and to
-the closing review that checks the agent's report, which reads it as the team's own rules for judging its stack.
+the closing review that checks the agent's report, which reads it as the team's own rules for judging its stack
+(from a copy beside the advisories; if that copy is changed during the run, none of its verdicts are sent).
 Comments like this one are left out, so this file as it comes is empty, and that is fine: a triage run then works
 from the code alone.
 `arceus-runner check` shows which of the two a run will get.

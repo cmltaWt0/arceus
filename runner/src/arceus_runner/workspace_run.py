@@ -717,7 +717,7 @@ class WorkspaceRun:
         if not self.REPORT_CRITERIA:
             return None
         path = self._extra_dirs(run).parent / "report-criteria.md"
-        write_atomic(path, self._criteria(run))
+        write_atomic(path, self.REPORT_CRITERIA)
         self._link_report(run)
         return ReportReview(rounds=self.REPORT_ROUNDS, criteria=path)
 
@@ -1286,11 +1286,6 @@ class WorkspaceRun:
 
     def _instructions(self) -> tuple[str | None, str]:
         return read_instructions(self.c.instructions)
-
-    def _criteria(self, run: AgentRun) -> str:
-        """What the closing review of this run judges its report by (`_report_review`): REPORT_CRITERIA, unless the
-        kind adds to it."""
-        return self.REPORT_CRITERIA
 
     def _brief_source(self, run: AgentRun) -> tuple[str | None, str, Path]:
         """The instructions this run is given, or None and why it cannot start, and the file they come from."""
