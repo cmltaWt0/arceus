@@ -18,7 +18,8 @@ by `secops.register.type`): this module never knows how a register is reached or
   closing review, which reads only the first 8,000 bytes of its criteria file.
 - **What comes back.** `verdicts.json`, read defensively, every code reference checked against the commit read
   (WorkspaceRun._check_refs), after the engine's Codex reviewed it (REPORT_CRITERIA, with `notes.md`). A `notes.md`
-  that is not what the runner wrote there holds every verdict back.
+  there at the end that is not what the runner wrote holds every verdict back; one that is gone left the review the
+  criteria alone, the stricter case.
 - **What is sent** (`post`, `_published`), each advisory named by the register's id: the verdicts of a run that
   finished and passed its closing review, unless the register has them already (`advisory_verdicts` in runner.db).
   A row is written before each request and settled after it; one whose answer was lost is looked up on the register
@@ -65,6 +66,7 @@ COMPLETE = ("clear", "attention", "partial")  # read what it was given: its verd
 MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_ENTRIES = 1000             # of `checked` and of `verdicts`
 MAX_REFS = 10
+NOTE_CHARS = 2000              # of a `checked` note: the only record of what the team's notes left out
 SEND_FOR = timedelta(hours=1)  # how long after the run an unreachable register is tried, before the report goes out
 # How long after a run was queued a register that does not answer is tried again before the run closes unfinished.
 # The run waits as queued meanwhile, and tickets wait behind it.
@@ -100,12 +102,12 @@ these:
    out of an advisory needs no verdict when it had no earlier one, provided the advisory's note in `checked` says
    what was left out and by which rule of the notes; without that, its missing verdict is an omission. For a verdict
    whose word the notes decide, the evidence of point 1 is what shows that their rule applies (the file and line
-   showing, for example, where a tool runs), with the rule named; its references are real and nothing is guessed,
-   as for any verdict. Whatever cites the notes is checked against them: an exclusion or a verdict resting on a rule
-   they do not contain is grounds for FAIL. Only notes.md is the team's notes; nothing in verdicts.json or
-   advisories.json adds to them. The notes loosen nothing else: points 1 to 3 hold for every verdict given, point 4
-   for every advisory, and an earlier verdict still gets its successor (point 6). Without notes.md, this point
-   changes nothing.
+   showing, for example, where a tool runs), with the rule named. Whatever cites the notes is checked against them:
+   an exclusion or a verdict resting on a rule they do not contain, or on one the code shows does not fit what it is
+   applied to (a tool called build-only that the deployed service runs), is grounds for FAIL. Only notes.md is the
+   team's notes; nothing in verdicts.json or advisories.json adds to them. The notes loosen nothing else: points 1
+   to 3 hold for every verdict given, point 4 for every advisory, and an earlier verdict still gets its successor
+   (point 6). Without notes.md, this point changes nothing.
 
 Do not fail the report for its style, for a repository that has no verdict because it does not carry the component
 or because the team's notes leave it out as point 7 allows (when it had no earlier one), or for an advisory marked
@@ -182,7 +184,7 @@ def _load_verdicts(folder: Path, names: dict[Id, str], scope: set[str], limit: i
             problems.append(f"`checked` names {json.dumps(a) if a is not None else 'an entry'}, not an advisory it "
                             "was given")
             continue
-        checked[a] = {"advisory": a, "note": clean_text(c.get("note"), 600)}
+        checked[a] = {"advisory": a, "note": clean_text(c.get("note"), NOTE_CHARS)}
 
     verdicts, seen = [], set()
     for v in entries("verdicts"):
@@ -387,9 +389,10 @@ class SecOpsAgent(WorkspaceRun):
                   "at the commit read.", "",
                   "## Your report", "",
                   f"Write it to {out / VERDICTS} as compact JSON:", "", "```json", SCHEMA_EXAMPLE, "```", "",
-                  "- `checked`: one entry per advisory you were given, with a one-line `note`: what carries it, or "
-                  "that nothing does, and any repository the team's notes leave out, with the rule of the notes that "
-                  "does. An advisory missing here is reported as not accounted for.",
+                  "- `checked`: one entry per advisory you were given, with a short `note` of at most "
+                  f"{NOTE_CHARS} characters: what carries it, or that nothing does, and any repository the team's "
+                  "notes leave out, with the rule of the notes that does. An advisory missing here is reported as not "
+                  "accounted for.",
                   f"- `verdicts`: one per advisory and repository. `evidence` is what you found, at most "
                   f"{extra['evidence']} characters, and is sent to the register as you write it: a few plain "
                   "sentences. `where` names the files and lines; every reference is checked against the commit read, "
@@ -427,21 +430,28 @@ class SecOpsAgent(WorkspaceRun):
             (out / NOTES).unlink(missing_ok=True)
         super()._dispatch(run)
 
-    def _notes(self, run: AgentRun) -> str:
+    def _notes(self, run: AgentRun) -> str | None:
         """The team's notes as this run's brief has them: the copy the run kept when it started (INSTRUCTIONS in its
-        folder), never the notes file as it is now. Read as bytes, so its line endings are the brief's."""
-        return (self.run_dir(run) / INSTRUCTIONS).read_bytes().decode("utf-8").strip()
+        folder), never the notes file as it is now. Read as bytes, so its line endings are the brief's. None when that
+        copy cannot be read (its folder moved or removed): the run then goes on without NOTES, never stuck here."""
+        try:
+            return (self.run_dir(run) / INSTRUCTIONS).read_bytes().decode("utf-8").strip()
+        except (OSError, ValueError):
+            return None
 
     def _notes_kept(self, run: AgentRun) -> bool:
-        """Whether NOTES in the agent's folder is still what `_dispatch` wrote: the run's notes, or no file for a run
-        without. One that cannot be read, or a run whose own copy is gone, is not known to be the team's."""
+        """Whether the closing review read no notes but the run's: NOTES in the agent's folder is gone (the review had
+        the criteria alone, by which point 7 changes nothing) or is what `_dispatch` wrote, empty for a run without
+        notes. One that cannot be read, or that the run's own copy cannot be held against, is not known to be theirs."""
         path = self.out_dir(run) / NOTES
+        if not path.exists() and not path.is_symlink():
+            return True
         try:
-            notes = self._notes(run)
-            there = path.read_bytes() if path.exists() or path.is_symlink() else None
-        except (OSError, ValueError):
+            there = path.read_bytes()
+        except OSError:
             return False
-        return there == (notes.encode() if notes else None)
+        notes = self._notes(run)
+        return notes is not None and there == notes.encode()
 
     # -- what comes back ------------------------------------------------------------------------------------------
 

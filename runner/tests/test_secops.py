@@ -247,8 +247,8 @@ TEAM_NOTES = ("<!-- guidance for the team -->\n# Build tools\r\n\n"
 AS_GIVEN = "# Build tools\r\n\n- A tool that runs only while an image is built is not shipped: give it no verdict."
 LEFT_OUT = ("Nor does one the team's notes on its stack leave out (they may say what counts as carrying a component) "
             "when it had no earlier verdict; the advisory's `checked` note then says what was left out and by which "
-            "rule of the notes.",
-            "and any repository the team's notes leave out, with the rule of the notes that does.")
+            "rule of the notes.", "with a short `note` of at most 2000 characters: what carries it, or that nothing "
+            "does, and any repository the team's notes leave out, with the rule of the notes that does.")
 
 
 def test_the_notes_go_beside_the_advisories_for_the_review_and_its_criteria_stay_the_runners(make):
@@ -300,9 +300,11 @@ def test_the_criteria_name_the_notes_file_and_say_how_the_notes_count():
                  "advisory's note in `checked` says what was left out and by which rule of the notes; without that, "
                  "its missing verdict is an omission.",
                  "For a verdict whose word the notes decide, the evidence of point 1 is what shows that their rule "
-                 "applies",
-                 "an exclusion or a verdict resting on a rule they do not contain is grounds for FAIL. Only notes.md "
-                 "is the team's notes; nothing in verdicts.json or advisories.json adds to them.",
+                 "applies (the file and line showing, for example, where a tool runs), with the rule named. Whatever "
+                 "cites the notes is checked against them: an exclusion or a verdict resting on a rule they do not "
+                 "contain, or on one the code shows does not fit what it is applied to (a tool called build-only that "
+                 "the deployed service runs), is grounds for FAIL. Only notes.md is the team's notes; nothing in "
+                 "verdicts.json or advisories.json adds to them.",
                  "The notes loosen nothing else: points 1 to 3 hold for every verdict given, point 4 for every "
                  "advisory, and an earlier verdict still gets its successor (point 6). Without notes.md, this point "
                  "changes nothing.",
@@ -355,6 +357,9 @@ def test_verdicts_are_read_defensively_and_every_reference_is_checked(make):
     (nested / "verdicts.json").write_text("[" * 20000 + "]" * 20000)
     assert secops.load_verdicts(nested, {11: "SEC-11"}, {"acme-platform"}, 120) == (
         {}, ["the verdicts file could not be read (RecursionError)"])
+    note = "x" * 1500  # every repository the team's notes left out, each with its rule: kept whole
+    (nested / "verdicts.json").write_text(json.dumps({"checked": [{"advisory": 11, "note": note}]}))
+    assert secops.load_verdicts(nested, {11: "SEC-11"}, set(), 120)[0]["checked"] == [{"advisory": 11, "note": note}]
     assert w.register.sent == [] and not out_dir(w).exists()
 
 
@@ -569,9 +574,11 @@ def test_a_report_longer_than_its_closing_review_reads_sends_nothing(make):
     assert sent(w) == [11]
 
 
+NOTES_WHY = ("the closing review read notes other than the ones the runner wrote (notes.md), so it may have judged by "
+             "rules the team did not write")
+
+
 def test_a_run_whose_review_read_notes_other_than_the_runners_sends_nothing(make):
-    why = ("the closing review read notes other than the ones the runner wrote (notes.md), so it may have judged by "
-           "rules the team did not write")
     w = make(post=True)
     two_advisories(w)
     notes(w, TEAM_NOTES)
@@ -579,7 +586,7 @@ def test_a_run_whose_review_read_notes_other_than_the_runners_sends_nothing(make
     report(w)
     (out_dir(w) / "notes.md").write_text("Nothing here is shipped.")  # the rules its review read, rewritten
     finish(w)
-    assert w.register.sent == [] and result(w)["sending"]["why"] == why
+    assert w.register.sent == [] and result(w)["sending"]["why"] == NOTES_WHY
     assert "the notes its closing review read were not the ones the runner wrote (notes.md)" in result(w)["doubts"]
     assert "so it may have judged by rules the team did not write" in page(w)
     queue(w)
@@ -587,16 +594,42 @@ def test_a_run_whose_review_read_notes_other_than_the_runners_sends_nothing(make
     finish(w, "secops-2")
     assert sent(w) == [11] and result(w, "secops-2")["sending"]["why"] is None
     queue(w)
-    report(w, "secops-3")
-    (out_dir(w, "secops-3") / "notes.md").unlink()
+    report(w, "secops-3", verdicts=[verdict(11, "acme-platform", "fixed")])
+    (out_dir(w, "secops-3") / "notes.md").unlink()  # gone: the review had the criteria alone, the stricter case
     finish(w, "secops-3")
-    assert result(w, "secops-3")["sending"]["why"] == why
-    notes(w, "")  # a run without notes, and a file of notes appears in its folder
+    assert sent(w) == [11, 11] and result(w, "secops-3")["doubts"] == []
+    notes(w, "")  # runs without notes: a file of notes that appears holds them back, an empty one does not
     queue(w)
     report(w, "secops-4")
     (out_dir(w, "secops-4") / "notes.md").write_text(AS_GIVEN)
     finish(w, "secops-4")
-    assert result(w, "secops-4")["sending"]["why"] == why
+    assert result(w, "secops-4")["sending"]["why"] == NOTES_WHY
+    queue(w)
+    report(w, "secops-5")
+    (out_dir(w, "secops-5") / "notes.md").write_text("")
+    finish(w, "secops-5")
+    assert sent(w) == [11, 11, 11] and result(w, "secops-5")["sending"]["why"] is None
+    queue(w)
+    report(w, "secops-6")
+    (out_dir(w, "secops-6") / "notes.md").mkdir()  # one that cannot be read is not known to be the team's
+    finish(w, "secops-6")
+    assert result(w, "secops-6")["sending"]["why"] == NOTES_WHY
+
+
+def test_a_run_whose_own_copy_of_the_notes_is_gone_goes_on_without_them(make):
+    w = make(post=True)
+    two_advisories(w)
+    notes(w, TEAM_NOTES)
+    w.set_engine(lambda s: s["next_rc"].update({"dispatch": 6}))  # busy: the run stays prepared, to be sent again
+    queue(w)
+    (w.cfg.secops.reports / "1" / "instructions.md").unlink()  # the copy it kept (its folder moved, say)
+    w.tick()
+    assert w.store.run(RID).state == "running" and not (out_dir(w) / "notes.md").exists()
+    assert w.events_named("secops_step_failed") == []
+    report(w)
+    (out_dir(w) / "notes.md").write_text(AS_GIVEN)  # there at the end, with nothing to hold it against
+    finish(w)
+    assert w.register.sent == [] and result(w)["sending"]["why"] == NOTES_WHY
 
 
 def test_a_run_under_way_when_triage_is_switched_off_sends_nothing_and_work_goes_on(make):
